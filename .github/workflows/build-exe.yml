@@ -28,10 +28,10 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          python -m PyInstaller --clean --strip --noupx --onefile --noconsole --name simple-injector main.py
+          python -m PyInstaller --clean --onedir --noconsole --name simple-injector main.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
           name: simple-injector-exe
-          path: dist/simple-injector.exe
+          path: dist/simple-injector/**
