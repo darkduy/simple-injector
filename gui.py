@@ -107,6 +107,14 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.auto_apply_signal.connect(self.run_apply_all)
         self.service.start_monitor(status_callback=self.status_signal.emit, auto_apply_callback=self.auto_apply_signal.emit)
 
+    def update_ui_status(self, connected: bool):
+        if connected:
+            self.status_lbl.setText('Status: connected')
+            self.status_lbl.setStyleSheet('color: #44FF44; font-weight: bold; font-size: 11px; border:none;')
+        else:
+            self.status_lbl.setText('Status: waiting...')
+            self.status_lbl.setStyleSheet('color: #FF4444; font-weight: bold; font-size: 11px; border:none;')
+
     def setup_title_bar(self):
         title_bar = QtWidgets.QWidget()
         lay = QtWidgets.QHBoxLayout(title_bar)
