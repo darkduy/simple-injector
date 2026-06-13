@@ -1,5 +1,5 @@
 import json
-import sys
+import threading
 from pathlib import Path
 
 from PyQt6 import QtWidgets, QtCore, QtGui
@@ -70,7 +70,10 @@ class AddFlagDialog(QtWidgets.QDialog):
     def import_file(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Select JSON', '', 'JSON Files (*.json)')
         if path:
-            self.json_input.setPlainText(Path(path).read_text(encoding='utf-8'))
+            try:
+                self.json_input.setPlainText(Path(path).read_text(encoding='utf-8'))
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, 'Import Error', f'Unable to read file:\n{e}')
 
 
 class InjectorApp(QtWidgets.QMainWindow):
@@ -101,7 +104,7 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.main_layout.addLayout(self.content_layout)
 
         self.init_ui()
-        self.service.fetch_offsets()
+        threading.Thread(target=self.service.fetch_offsets, daemon=True).start()
 
         self.status_signal.connect(self.update_ui_status)
         self.auto_apply_signal.connect(self.run_apply_all)
@@ -129,7 +132,7 @@ class InjectorApp(QtWidgets.QMainWindow):
             button.setFixedSize(30, 30)
             button.setStyleSheet('QPushButton { background: transparent; border: none; font-size: 14px; } QPushButton:hover { color: #FF3333; }')
 
-        close_btn.clicked.connect(sys.exit)
+        close_btn.clicked.connect(self.close)
         min_btn.clicked.connect(self.showMinimized)
 
         lay.addWidget(lbl)
@@ -205,6 +208,10 @@ class InjectorApp(QtWidgets.QMainWindow):
             self.move(self.x() + delta.x(), self.y() + delta.y())
             self.drag_pos = event.globalPosition().toPoint()
 
+    def mouseReleaseEvent(self, event):
+        if hasattr(self, 'drag_pos'):
+            del self.drag_pos
+
     def refresh_table(self):
         self.table.setRowCount(0)
         search = self.search_bar.text().lower()
@@ -221,18 +228,26 @@ class InjectorApp(QtWidgets.QMainWindow):
         if dialog.exec():
             try:
                 data = json.loads(dialog.json_input.toPlainText())
+                if not isinstance(data, dict):
+                    raise ValueError('JSON must be an object with key/value pairs.')
                 for key, value in data.items():
                     self.added_flags[self.service.clean_prefix(key)] = str(value)
                 self.refresh_table()
                 self.service.save_data()
-            except Exception:
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, 'Invalid JSON', f'Unable to add flags:\n{e}')
                 return None
 
     def remove_selected(self):
-        for item in self.table.selectedItems():
-            name = self.table.item(item.row(), 0).text()
-            if name in self.added_flags:
-                del self.added_flags[name]
+        rows = set()
+        for selection in self.table.selectedRanges():
+            rows.update(range(selection.topRow(), selection.bottomRow() + 1))
+        for row in sorted(rows, reverse=True):
+            name_item = self.table.item(row, 0)
+            if name_item:
+                name = name_item.text()
+                if name in self.added_flags:
+                    del self.added_flags[name]
         self.refresh_table()
         self.service.save_data()
 
@@ -242,6 +257,13 @@ class InjectorApp(QtWidgets.QMainWindow):
     def toggle_auto_apply(self, state):
         self.service.toggle_auto_apply(state)
 
+    def closeEvent(self, event):
+        try:
+            self.service.stop_monitor()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def copy_to_clipboard(self):
         to_copy = {}
         for selection in self.table.selectedRanges():
@@ -249,7 +271,9 @@ class InjectorApp(QtWidgets.QMainWindow):
                 name_item = self.table.item(row, 0)
                 if name_item:
                     name = name_item.text()
-                    to_copy[name] = self.added_flags[name]
+                    value = self.added_flags.get(name)
+                    if value is not None:
+                        to_copy[name] = value
         if to_copy:
             QtWidgets.QApplication.clipboard().setText(json.dumps(to_copy, indent=4))
 
