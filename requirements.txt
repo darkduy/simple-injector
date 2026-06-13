@@ -1,4 +1,3 @@
 PyQt6
-pymem
+psutil
 requests
-pyinstaller

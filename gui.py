@@ -111,9 +111,11 @@ class InjectorApp(QtWidgets.QMainWindow):
         if connected:
             self.status_lbl.setText('Status: connected')
             self.status_lbl.setStyleSheet('color: #44FF44; font-weight: bold; font-size: 11px; border:none;')
+            self.apply_all_btn.setEnabled(True)
         else:
-            self.status_lbl.setText('Status: waiting...')
+            self.status_lbl.setText('Status: waiting for Roblox...')
             self.status_lbl.setStyleSheet('color: #FF4444; font-weight: bold; font-size: 11px; border:none;')
+            self.apply_all_btn.setEnabled(False)
 
     def setup_title_bar(self):
         title_bar = QtWidgets.QWidget()
@@ -176,6 +178,8 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.apply_all_btn.setObjectName('ApplyBtn')
         self.apply_all_btn.setFixedSize(140, 30)
         self.apply_all_btn.clicked.connect(self.run_apply_all)
+        self.apply_all_btn.setToolTip('Apply all modified FFlags when Roblox is connected')
+        self.apply_all_btn.setEnabled(self.service.is_connected)
 
         v_box = QtWidgets.QVBoxLayout()
         v_box.addWidget(self.auto_apply_cb, alignment=QtCore.Qt.AlignmentFlag.AlignRight)

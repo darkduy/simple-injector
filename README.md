@@ -5,7 +5,7 @@ A small Python injector GUI app for Roblox flag injection.
 ## Overview
 
 - Uses `PyQt6` for the GUI.
-- Uses `pymem` to attach to `RobloxPlayerBeta.exe`.
+- Uses `psutil` to find `RobloxPlayerBeta.exe` and Windows API calls to write process memory.
 - Fetches flag offsets from a remote URL and writes values directly into process memory.
 
 ## Files
