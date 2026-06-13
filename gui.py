@@ -89,6 +89,7 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.service = InjectorService()
         self.added_flags = self.service.added_flags
         self.settings = self.service.settings
+        self.apply_pending = False
 
         self.container = QtWidgets.QWidget()
         self.container.setObjectName('MainContainer')
@@ -184,6 +185,10 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.apply_all_btn.setToolTip('Apply all modified FFlags when Roblox is connected')
         self.apply_all_btn.setEnabled(self.service.is_connected)
 
+        self.apply_pending_lbl = QtWidgets.QLabel('')
+        self.apply_pending_lbl.setStyleSheet('color: #999; font-size: 10px; border:none;')
+        self.content_layout.addWidget(self.apply_pending_lbl, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+
         v_box = QtWidgets.QVBoxLayout()
         v_box.addWidget(self.auto_apply_cb, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
         v_box.addWidget(self.apply_all_btn)
@@ -252,7 +257,20 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.service.save_data()
 
     def run_apply_all(self):
+        if self.apply_pending:
+            return
+        self.apply_pending = True
+        self.apply_pending_lbl.setText('apply_pending')
+        self.apply_all_btn.setEnabled(False)
+        self.apply_all_btn.setText('Applying in 1s...')
+        QtCore.QTimer.singleShot(1000, self._delayed_apply_all)
+
+    def _delayed_apply_all(self):
         self.service.run_apply_all()
+        self.apply_pending = False
+        self.apply_pending_lbl.setText('')
+        self.apply_all_btn.setText('Apply All')
+        self.apply_all_btn.setEnabled(self.service.is_connected)
 
     def toggle_auto_apply(self, state):
         self.service.toggle_auto_apply(state)
