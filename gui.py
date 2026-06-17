@@ -1,4 +1,6 @@
+import ast
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -125,7 +127,7 @@ class InjectorApp(QtWidgets.QMainWindow):
         title_bar = QtWidgets.QWidget()
         lay = QtWidgets.QHBoxLayout(title_bar)
 
-        lbl = QtWidgets.QLabel('Check Auto Apply To Apply All Flag\'s')
+        lbl = QtWidgets.QLabel('simple-injector')
         min_btn = QtWidgets.QPushButton('-')
         close_btn = QtWidgets.QPushButton('✕')
 
@@ -228,13 +230,29 @@ class InjectorApp(QtWidgets.QMainWindow):
                 self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
         self.count_lbl.setText(f'Modified FFlags: {len(self.added_flags)}')
 
+    def normalize_json_text(self, text: str) -> str:
+        text = text.strip()
+        # Allow trailing commas in objects and arrays
+        text = re.sub(r',\s*([\]}])', r'\1', text)
+        return text
+
     def show_add_dialog(self):
         dialog = AddFlagDialog(self)
         if dialog.exec():
             try:
-                data = json.loads(dialog.json_input.toPlainText())
+                text = dialog.json_input.toPlainText().strip()
+                if not text:
+                    raise ValueError('No JSON input provided.')
+
+                normalized_text = self.normalize_json_text(text)
+                try:
+                    data = json.loads(normalized_text)
+                except json.JSONDecodeError:
+                    data = ast.literal_eval(normalized_text)
+
                 if not isinstance(data, dict):
                     raise ValueError('JSON must be an object with key/value pairs.')
+
                 for key, value in data.items():
                     self.added_flags[self.service.clean_prefix(key)] = str(value)
                 self.refresh_table()
