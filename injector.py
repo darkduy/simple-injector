@@ -135,7 +135,10 @@ class InjectorService:
         try:
             with urllib.request.urlopen(OFFSETS_URL, timeout=5) as response:
                 text = response.read().decode('utf-8', errors='replace')
-            matches = re.findall(r'(\w+)\s*=\s*(0x[0-9A-Fa-f]+)', text)
+            matches = re.findall(
+                r'\b(?:static\s+)?inline\s+constexpr\s+(?:const\s+)?(?:uintptr_t|auto)\s+(\w+)\s*=\s*(0x[0-9A-Fa-f]+)',
+                text,
+            )
             new_offsets = {self.clean_prefix(name): int(value, 16) for name, value in matches}
             if new_offsets:
                 self.offsets = new_offsets
