@@ -102,6 +102,7 @@ class InjectorService:
         self.is_connected = False
         self.status_callback = None
         self.auto_apply_callback = None
+        self.apply_result_callback = None
         self.target_process_name = 'RobloxPlayerBeta.exe'
         self.running = False
         self.monitor_thread = None
@@ -144,11 +145,12 @@ class InjectorService:
         except Exception as exc:
             print(f'Warning: failed to fetch offsets: {exc}')
 
-    def start_monitor(self, status_callback=None, auto_apply_callback=None):
+    def start_monitor(self, status_callback=None, auto_apply_callback=None, apply_result_callback=None):
         if self.running:
             return
         self.status_callback = status_callback
         self.auto_apply_callback = auto_apply_callback
+        self.apply_result_callback = apply_result_callback
         self.running = True
         self.monitor_thread = threading.Thread(target=self.process_monitor, daemon=True)
         self.monitor_thread.start()
@@ -267,18 +269,22 @@ class InjectorService:
                 with self.process_lock:
                     if not self.is_connected or not self.process_handle or self.base_address is None:
                         return
-                applied_count = 0
+                status_map = {name: False for name in self.added_flags}
                 for _ in range(self.retry_count):
                     if not self.is_connected:
                         break
-                    applied_count = 0
                     for name, value in self.added_flags.items():
                         if not self.is_connected:
                             break
+                        if status_map.get(name):
+                            continue
                         if self.inject(name, value):
-                            applied_count += 1
+                            status_map[name] = True
                     time.sleep(0.05)
-                print(f'Applied FFlags: {applied_count}')
+                if self.apply_result_callback:
+                    self.apply_result_callback(status_map)
+                applied_count = sum(1 for succeeded in status_map.values() if succeeded)
+                print(f'Applied FFlags: {applied_count} / {len(status_map)}')
             finally:
                 self.apply_lock.release()
 

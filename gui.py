@@ -81,6 +81,7 @@ class AddFlagDialog(QtWidgets.QDialog):
 class InjectorApp(QtWidgets.QMainWindow):
     status_signal = QtCore.pyqtSignal(bool)
     auto_apply_signal = QtCore.pyqtSignal()
+    apply_result_signal = QtCore.pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -92,6 +93,7 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.added_flags = self.service.added_flags
         self.settings = self.service.settings
         self.apply_pending = False
+        self.flag_statuses = {}
 
         self.container = QtWidgets.QWidget()
         self.container.setObjectName('MainContainer')
@@ -111,7 +113,12 @@ class InjectorApp(QtWidgets.QMainWindow):
 
         self.status_signal.connect(self.update_ui_status)
         self.auto_apply_signal.connect(self.run_apply_all)
-        self.service.start_monitor(status_callback=self.status_signal.emit, auto_apply_callback=self.auto_apply_signal.emit)
+        self.apply_result_signal.connect(self.handle_apply_result)
+        self.service.start_monitor(
+            status_callback=self.status_signal.emit,
+            auto_apply_callback=self.auto_apply_signal.emit,
+            apply_result_callback=self.apply_result_signal.emit,
+        )
 
     def update_ui_status(self, connected: bool):
         if connected:
@@ -167,12 +174,14 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.search_bar.textChanged.connect(self.refresh_table)
         self.content_layout.addWidget(self.search_bar)
 
-        self.table = QtWidgets.QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(['Name', 'Value'])
+        self.table = QtWidgets.QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(['Name', 'Value', 'Status'])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.content_layout.addWidget(self.table)
 
         bottom = QtWidgets.QHBoxLayout()
@@ -190,6 +199,10 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.apply_pending_lbl = QtWidgets.QLabel('')
         self.apply_pending_lbl.setStyleSheet('color: #999; font-size: 10px; border:none;')
         self.content_layout.addWidget(self.apply_pending_lbl, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+
+        self.apply_summary_lbl = QtWidgets.QLabel('')
+        self.apply_summary_lbl.setStyleSheet('color: #999; font-size: 10px; border:none;')
+        self.content_layout.addWidget(self.apply_summary_lbl, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
         v_box = QtWidgets.QVBoxLayout()
         v_box.addWidget(self.auto_apply_cb, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
@@ -228,6 +241,21 @@ class InjectorApp(QtWidgets.QMainWindow):
                 self.table.insertRow(row)
                 self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(name))
                 self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
+
+                status = self.flag_statuses.get(name)
+                if status is True:
+                    status_text = 'Success'
+                    color = QtGui.QColor('#44FF44')
+                elif status is False:
+                    status_text = 'Fail'
+                    color = QtGui.QColor('#FF4444')
+                else:
+                    status_text = 'Pending'
+                    color = QtGui.QColor('#999999')
+
+                status_item = QtWidgets.QTableWidgetItem(status_text)
+                status_item.setForeground(QtGui.QBrush(color))
+                self.table.setItem(row, 2, status_item)
         self.count_lbl.setText(f'Modified FFlags: {len(self.added_flags)}')
 
     def normalize_json_text(self, text: str) -> str:
@@ -254,7 +282,7 @@ class InjectorApp(QtWidgets.QMainWindow):
                     raise ValueError('JSON must be an object with key/value pairs.')
 
                 for key, value in data.items():
-                    self.added_flags[self.service.clean_prefix(key)] = str(value)
+                    self.added_flags[key] = str(value)
                 self.refresh_table()
                 self.service.save_data()
             except Exception as e:
@@ -292,6 +320,19 @@ class InjectorApp(QtWidgets.QMainWindow):
 
     def toggle_auto_apply(self, state):
         self.service.toggle_auto_apply(state)
+
+    def handle_apply_result(self, status_map):
+        self.flag_statuses = {name: bool(status) for name, status in status_map.items()}
+        success_count = sum(1 for status in self.flag_statuses.values() if status)
+        total = len(status_map)
+        fail_count = total - success_count
+        if fail_count > 0:
+            self.apply_summary_lbl.setText(f'Apply result: {success_count} success, {fail_count} fail')
+            self.apply_summary_lbl.setStyleSheet('color: #FF4444; font-size: 10px; border:none;')
+        else:
+            self.apply_summary_lbl.setText(f'Apply result: {success_count} success, {fail_count} fail')
+            self.apply_summary_lbl.setStyleSheet('color: #44FF44; font-size: 10px; border:none;')
+        self.refresh_table()
 
     def closeEvent(self, event):
         try:
