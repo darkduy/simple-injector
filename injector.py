@@ -12,7 +12,7 @@ DATA_PATH = Path(os.getenv('LOCALAPPDATA', Path.home() / '.local' / 'share')) / 
 DATA_PATH.mkdir(parents=True, exist_ok=True)
 FFS_FILE = DATA_PATH / 'ffs.json'
 SETTINGS_FILE = DATA_PATH / 'settings.json'
-OFFSETS_URL = 'https://raw.githubusercontent.com/azayan165-svg/fflags.hpp/refs/heads/main/fflags.hpp'
+OFFSETS_URL = 'https://raw.githubusercontent.com/darkduy/simple-injector/refs/heads/main/fflags.hpp'
 
 kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 OpenProcess = kernel32.OpenProcess
