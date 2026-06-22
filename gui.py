@@ -80,19 +80,16 @@ class AddFlagDialog(QtWidgets.QDialog):
 
 class InjectorApp(QtWidgets.QMainWindow):
     status_signal = QtCore.pyqtSignal(bool)
-    auto_apply_signal = QtCore.pyqtSignal()
     apply_result_signal = QtCore.pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(QtCore.Qt.WindowType.FramelessWindowHint)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(600, 750)
+        self.setFixedSize(560, 680)
 
         self.service = InjectorService()
         self.added_flags = self.service.added_flags
-        self.settings = self.service.settings
-        self.apply_pending = False
         self.flag_statuses = {}
 
         self.container = QtWidgets.QWidget()
@@ -112,11 +109,9 @@ class InjectorApp(QtWidgets.QMainWindow):
         threading.Thread(target=self.service.fetch_offsets, daemon=True).start()
 
         self.status_signal.connect(self.update_ui_status)
-        self.auto_apply_signal.connect(self.run_apply_all)
         self.apply_result_signal.connect(self.handle_apply_result)
         self.service.start_monitor(
             status_callback=self.status_signal.emit,
-            auto_apply_callback=self.auto_apply_signal.emit,
             apply_result_callback=self.apply_result_signal.emit,
         )
 
@@ -185,9 +180,6 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.content_layout.addWidget(self.table)
 
         bottom = QtWidgets.QHBoxLayout()
-        self.auto_apply_cb = QtWidgets.QCheckBox('Auto Apply')
-        self.auto_apply_cb.setChecked(self.settings.get('auto_apply', False))
-        self.auto_apply_cb.stateChanged.connect(self.toggle_auto_apply)
 
         self.apply_all_btn = QtWidgets.QPushButton('Apply All')
         self.apply_all_btn.setObjectName('ApplyBtn')
@@ -196,19 +188,12 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.apply_all_btn.setToolTip('Apply all modified FFlags when Roblox is connected')
         self.apply_all_btn.setEnabled(self.service.is_connected)
 
-        self.apply_pending_lbl = QtWidgets.QLabel('')
-        self.apply_pending_lbl.setStyleSheet('color: #999; font-size: 10px; border:none;')
-        self.content_layout.addWidget(self.apply_pending_lbl, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
-
         self.apply_summary_lbl = QtWidgets.QLabel('')
         self.apply_summary_lbl.setStyleSheet('color: #999; font-size: 10px; border:none;')
         self.content_layout.addWidget(self.apply_summary_lbl, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
-        v_box = QtWidgets.QVBoxLayout()
-        v_box.addWidget(self.auto_apply_cb, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
-        v_box.addWidget(self.apply_all_btn)
         bottom.addStretch()
-        bottom.addLayout(v_box)
+        bottom.addWidget(self.apply_all_btn)
         self.content_layout.addLayout(bottom)
 
         self.add_btn.clicked.connect(self.show_add_dialog)
@@ -303,23 +288,9 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.service.save_data()
 
     def run_apply_all(self):
-        if self.apply_pending:
-            return
-        self.apply_pending = True
-        self.apply_pending_lbl.setText('apply_pending')
         self.apply_all_btn.setEnabled(False)
-        self.apply_all_btn.setText('Applying in 1s...')
-        QtCore.QTimer.singleShot(1000, self._delayed_apply_all)
-
-    def _delayed_apply_all(self):
         self.service.run_apply_all()
-        self.apply_pending = False
-        self.apply_pending_lbl.setText('')
-        self.apply_all_btn.setText('Apply All')
         self.apply_all_btn.setEnabled(self.service.is_connected)
-
-    def toggle_auto_apply(self, state):
-        self.service.toggle_auto_apply(state)
 
     def handle_apply_result(self, status_map):
         self.flag_statuses = {name: bool(status) for name, status in status_map.items()}

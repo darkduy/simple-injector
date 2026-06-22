@@ -11,7 +11,6 @@ from pathlib import Path
 DATA_PATH = Path(os.getenv('LOCALAPPDATA', Path.home() / '.local' / 'share')) / 'ez'
 DATA_PATH.mkdir(parents=True, exist_ok=True)
 FFS_FILE = DATA_PATH / 'ffs.json'
-SETTINGS_FILE = DATA_PATH / 'settings.json'
 OFFSETS_URL = 'https://raw.githubusercontent.com/darkduy/simple-injector/refs/heads/main/fflags.hpp'
 
 kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -94,14 +93,12 @@ INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
 class InjectorService:
     def __init__(self):
         self.added_flags = self.load_json(FFS_FILE, {})
-        self.settings = self.load_json(SETTINGS_FILE, {'auto_apply': False})
         self.offsets = {}
         self.process_handle = None
         self.base_address = None
         self.process_pid = None
         self.is_connected = False
         self.status_callback = None
-        self.auto_apply_callback = None
         self.apply_result_callback = None
         self.target_process_name = 'RobloxPlayerBeta.exe'
         self.running = False
@@ -122,7 +119,6 @@ class InjectorService:
 
     def save_data(self):
         FFS_FILE.write_text(json.dumps(self.added_flags, indent=4), encoding='utf-8')
-        SETTINGS_FILE.write_text(json.dumps(self.settings), encoding='utf-8')
 
     def clean_prefix(self, name: str) -> str:
         prefixes = ['FFlag', 'DFFlag', 'FInt', 'DFInt', 'FString', 'DFString', 'FLog']
@@ -148,11 +144,10 @@ class InjectorService:
         except Exception as exc:
             print(f'Warning: failed to fetch offsets: {exc}')
 
-    def start_monitor(self, status_callback=None, auto_apply_callback=None, apply_result_callback=None):
+    def start_monitor(self, status_callback=None, apply_result_callback=None):
         if self.running:
             return
         self.status_callback = status_callback
-        self.auto_apply_callback = auto_apply_callback
         self.apply_result_callback = apply_result_callback
         self.running = True
         self.monitor_thread = threading.Thread(target=self.process_monitor, daemon=True)
@@ -253,8 +248,6 @@ class InjectorService:
                             self.process_pid = pid
                         self.set_connection_state(True)
                         print(f'Roblox connected: {pid}')
-                        if self.settings.get('auto_apply') and self.auto_apply_callback:
-                            threading.Thread(target=self.auto_apply_callback, daemon=True).start()
                     else:
                         CloseHandle(handle)
             elif not pid and connected:
@@ -334,9 +327,6 @@ class InjectorService:
                 print(f'Injection error for {name}: {exc}')
                 return False
 
-    def toggle_auto_apply(self, state):
-        self.settings['auto_apply'] = bool(state)
-        self.save_data()
 
     def export_to_file(self, path: Path):
         path.write_text(json.dumps(self.added_flags, indent=4), encoding='utf-8')
