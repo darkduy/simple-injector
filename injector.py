@@ -83,7 +83,7 @@ Module32NextW.restype = wintypes.BOOL
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_OPERATION = 0x0008
 PROCESS_VM_WRITE = 0x0020
-PROCESS_OPEN_ACCESS = PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE
+PROCESS_ACCESS = PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE
 TH32CS_SNAPMODULE = 0x00000008
 TH32CS_SNAPMODULE32 = 0x00000010
 TH32CS_SNAPPROCESS = 0x00000002
@@ -101,6 +101,7 @@ class InjectorService:
         self.status_callback = None
         self.apply_result_callback = None
         self.target_process_name = 'RobloxPlayerBeta.exe'
+        self.target_process_name_lower = self.target_process_name.lower()
         self.running = False
         self.monitor_thread = None
         self.process_lock = threading.Lock()
@@ -126,6 +127,17 @@ class InjectorService:
             if name.startswith(prefix):
                 return name[len(prefix):]
         return name
+
+    def _parse_flag_value(self, value):
+        normalized = str(value).strip().lower()
+        if normalized == 'true':
+            return 1
+        if normalized == 'false':
+            return 0
+        try:
+            return int(normalized, 0)
+        except ValueError:
+            return None
 
     def fetch_offsets(self):
         try:
@@ -182,8 +194,9 @@ class InjectorService:
 
         pid = None
         if Process32FirstW(snapshot, ctypes.byref(entry)):
+            target_name = name.lower()
             while True:
-                if entry.szExeFile and entry.szExeFile.lower() == name.lower():
+                if entry.szExeFile and entry.szExeFile.lower() == target_name:
                     pid = entry.th32ProcessID
                     break
                 if not Process32NextW(snapshot, ctypes.byref(entry)):
@@ -193,10 +206,30 @@ class InjectorService:
         return pid
 
     def open_process(self, pid: int):
-        handle = OpenProcess(PROCESS_OPEN_ACCESS, False, pid)
+        handle = OpenProcess(PROCESS_ACCESS, False, pid)
         if not handle or handle == INVALID_HANDLE_VALUE:
             return None
         return handle
+
+    def _attach_to_process(self, pid: int) -> bool:
+        handle = self.open_process(pid)
+        if not handle:
+            return False
+
+        base_addr = self.get_main_module_base_address(pid)
+        if base_addr is None:
+            CloseHandle(handle)
+            return False
+
+        self.close_process()
+        with self.process_lock:
+            self.process_handle = handle
+            self.base_address = base_addr
+            self.process_pid = pid
+
+        self.set_connection_state(True)
+        print(f'Roblox connected: {pid}')
+        return True
 
     def close_process(self):
         handle = None
@@ -221,7 +254,7 @@ class InjectorService:
         base_addr = None
         if Module32FirstW(snapshot, ctypes.byref(module_entry)):
             while True:
-                if module_entry.szModule and module_entry.szModule.lower() == self.target_process_name.lower():
+                if module_entry.szModule and module_entry.szModule.lower() == self.target_process_name_lower:
                     base_addr = ctypes.cast(module_entry.modBaseAddr, ctypes.c_void_p).value
                     break
                 if not Module32NextW(snapshot, ctypes.byref(module_entry)):
@@ -236,22 +269,12 @@ class InjectorService:
             with self.process_lock:
                 connected = self.is_connected
                 current_pid = self.process_pid
+
             if pid and (not connected or current_pid != pid):
-                handle = self.open_process(pid)
-                if handle:
-                    base_addr = self.get_main_module_base_address(pid)
-                    if base_addr is not None:
-                        self.close_process()
-                        with self.process_lock:
-                            self.process_handle = handle
-                            self.base_address = base_addr
-                            self.process_pid = pid
-                        self.set_connection_state(True)
-                        print(f'Roblox connected: {pid}')
-                    else:
-                        CloseHandle(handle)
+                self._attach_to_process(pid)
             elif not pid and connected:
                 self.close_process()
+
             time.sleep(1.5)
 
     def run_apply_all(self):
@@ -260,22 +283,33 @@ class InjectorService:
         if not self.apply_lock.acquire(blocking=False):
             return None
 
+        items = list(self.added_flags.items())
+        if not items:
+            self.apply_lock.release()
+            return None
+
         def task():
             try:
                 with self.process_lock:
                     if not self.is_connected or not self.process_handle or self.base_address is None:
                         return
-                status_map = {name: False for name in self.added_flags}
+                status_map = {name: False for name, _ in items}
+                remaining = len(items)
                 for _ in range(self.retry_count):
-                    if not self.is_connected:
+                    if not self.is_connected or remaining == 0:
                         break
-                    for name, value in self.added_flags.items():
+                    for name, value in items:
                         if not self.is_connected:
                             break
-                        if status_map.get(name):
+                        if status_map[name]:
                             continue
                         if self.inject(name, value):
                             status_map[name] = True
+                            remaining -= 1
+                            if remaining == 0:
+                                break
+                    if remaining == 0:
+                        break
                     time.sleep(0.05)
                 if self.apply_result_callback:
                     self.apply_result_callback(status_map)
@@ -288,18 +322,12 @@ class InjectorService:
 
     def inject(self, name: str, value) -> bool:
         name = self.clean_prefix(name)
-        if name not in self.offsets:
+        offset = self.offsets.get(name)
+        if offset is None:
             return False
 
-        text_value = str(value).strip().lower()
-        try:
-            if text_value == 'true':
-                val = 1
-            elif text_value == 'false':
-                val = 0
-            else:
-                val = int(text_value, 0)
-        except ValueError:
+        val = self._parse_flag_value(value)
+        if val is None:
             print(f'Invalid FFlag value for {name}: {value}')
             return False
 
@@ -310,7 +338,7 @@ class InjectorService:
                 if not self.process_handle or self.base_address is None:
                     return False
                 process_handle = self.process_handle
-                address = ctypes.c_void_p(self.base_address + self.offsets[name])
+                address = ctypes.c_void_p(self.base_address + offset)
             try:
                 success = WriteProcessMemory(
                     process_handle,

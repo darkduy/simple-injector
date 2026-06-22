@@ -119,11 +119,13 @@ class InjectorApp(QtWidgets.QMainWindow):
         if connected:
             self.status_lbl.setText('Status: connected')
             self.status_lbl.setStyleSheet('color: #44FF44; font-weight: bold; font-size: 11px; border:none;')
-            self.apply_all_btn.setEnabled(True)
         else:
             self.status_lbl.setText('Status: waiting for Roblox...')
             self.status_lbl.setStyleSheet('color: #FF4444; font-weight: bold; font-size: 11px; border:none;')
-            self.apply_all_btn.setEnabled(False)
+        self.update_apply_button_state()
+
+    def update_apply_button_state(self):
+        self.apply_all_btn.setEnabled(self.service.is_connected and bool(self.added_flags))
 
     def setup_title_bar(self):
         title_bar = QtWidgets.QWidget()
@@ -186,7 +188,7 @@ class InjectorApp(QtWidgets.QMainWindow):
         self.apply_all_btn.setFixedSize(140, 30)
         self.apply_all_btn.clicked.connect(self.run_apply_all)
         self.apply_all_btn.setToolTip('Apply all modified FFlags when Roblox is connected')
-        self.apply_all_btn.setEnabled(self.service.is_connected)
+        self.apply_all_btn.setEnabled(False)
 
         self.apply_summary_lbl = QtWidgets.QLabel('')
         self.apply_summary_lbl.setStyleSheet('color: #999; font-size: 10px; border:none;')
@@ -242,6 +244,7 @@ class InjectorApp(QtWidgets.QMainWindow):
                 status_item.setForeground(QtGui.QBrush(color))
                 self.table.setItem(row, 2, status_item)
         self.count_lbl.setText(f'Modified FFlags: {len(self.added_flags)}')
+        self.update_apply_button_state()
 
     def normalize_json_text(self, text: str) -> str:
         text = text.strip()
@@ -289,10 +292,13 @@ class InjectorApp(QtWidgets.QMainWindow):
 
     def run_apply_all(self):
         self.apply_all_btn.setEnabled(False)
+        self.apply_all_btn.setText('Applying...')
+        self.apply_summary_lbl.setText('')
         self.service.run_apply_all()
-        self.apply_all_btn.setEnabled(self.service.is_connected)
 
     def handle_apply_result(self, status_map):
+        self.apply_all_btn.setText('Apply All')
+        self.update_apply_button_state()
         self.flag_statuses = {name: bool(status) for name, status in status_map.items()}
         success_count = sum(1 for status in self.flag_statuses.values() if status)
         total = len(status_map)
