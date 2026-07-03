@@ -1,45 +1,57 @@
 # simple-injector
 
-A small Python injector GUI app for Roblox flag injection.
+A small Rust GUI application for Roblox Fast Flag memory injection.
 
 ## Overview
 
-- Uses `PyQt6` for the GUI.
-- Uses `psutil` to find `RobloxPlayerBeta.exe` and Windows API calls to write process memory.
-- Fetches flag offsets from a remote URL and writes values directly into process memory.
+- Uses `egui`/`eframe` for the GUI.
+- Enumerates processes and modules via the Windows Toolhelp32 API
+  (`windows` crate) to locate `RobloxPlayerBeta.exe` and its base address.
+- Writes flag values directly into process memory with `WriteProcessMemory`.
+- Fetches flag offsets from a remote URL and parses them out of a C++ header.
 
 ## Files
 
-- `main.py` — application launcher
-- `gui.py` — PyQt6 GUI implementation
-- `injector.py` — backend injector logic
+- `src/main.rs` — application entry point
+- `src/gui.rs` — egui GUI implementation
+- `src/injector.rs` — process discovery, offset parsing, and memory injection
+- `src/settings.rs` — paths, remote URL, and tuning constants
 - `.github/workflows/build-exe.yml` — GitHub Actions workflow to build a Windows executable
+- `.github/workflows/codeql.yml` — CodeQL static analysis workflow
 
 ## Run locally
 
 ```bash
-python main.py
+cargo run --release
 ```
 
-> Install required Python modules:
-
-```bash
-pip install -r requirements.txt
-```
+Requires the Rust toolchain (edition 2024, so a recent stable compiler —
+install via [rustup](https://rustup.rs)).
 
 ## Troubleshooting
 
-- If the app fails to start, confirm `PyQt6` is installed for your Python version.
-- If `pymem` cannot attach, run the app with administrator privileges and ensure `RobloxPlayerBeta.exe` is running.
-- If the GitHub Actions build fails, verify the workflow is using `windows-latest` and the `pyinstaller` package is installed.
+- If the app fails to start, confirm you're running on Windows — the
+  process/memory APIs used here are Windows-only.
+- If injection doesn't attach, run the app with administrator privileges
+  and confirm `RobloxPlayerBeta.exe` is running.
+- If the GitHub Actions build fails, verify the workflow is using
+  `windows-latest` and that the Rust toolchain step succeeded.
 
 ## Build executable locally
 
 ```bash
-pyinstaller --onefile --noconsole --name simple-injector main.py
+cargo build --release
 ```
+
+The binary is produced at `target/release/simple-injector.exe`. Rust
+produces a single native executable directly — no separate packaging step
+(like PyInstaller) is needed.
 
 ## GitHub Actions
 
 A workflow is included at `.github/workflows/build-exe.yml`.
-It builds the project on `windows-latest`, installs dependencies, runs PyInstaller, and uploads `dist/simple-injector.exe` as an artifact.
+It builds the project on `windows-latest` with `cargo build --release`
+and uploads `target/release/simple-injector.exe` as an artifact.
+
+A second workflow, `.github/workflows/codeql.yml`, runs CodeQL static
+analysis against the Rust source and the workflow files themselves.

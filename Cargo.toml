@@ -1,0 +1,33 @@
+[package]
+name = "simple-injector"
+version = "0.1.0"
+edition = "2024"
+description = "Roblox Fast Flag memory injector"
+
+[[bin]]
+name = "simple-injector"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "2"
+regex = "1"
+rfd = "0.15"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
