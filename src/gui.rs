@@ -124,7 +124,11 @@ impl eframe::App for InjectorApp {
 
             ui.separator();
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height((ui.available_height() - 70.0).max(80.0))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                ui.set_max_width(ui.available_width());
                 let flags: Vec<(String, String)> = {
                     let guard = self.service.added_flags.lock().unwrap();
                     guard
@@ -150,8 +154,8 @@ impl eframe::App for InjectorApp {
                         ui.end_row();
 
                         for (name, value) in &flags {
-                            ui.label(name);
-                            ui.label(value);
+                            ui.add(egui::Label::new(name).truncate());
+                            ui.add(egui::Label::new(value).truncate());
 
                             let (text, color) = match self.flag_statuses.get(name) {
                                 Some(FlagStatus::Success) => {
@@ -217,13 +221,21 @@ impl eframe::App for InjectorApp {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(true)
+                .default_size([460.0, 380.0])
+                .min_size([340.0, 260.0])
+                .max_size([700.0, 600.0])
                 .show(ctx, |ui| {
                     ui.label("Paste JSON here:");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.add_dialog_text)
-                            .desired_rows(12)
-                            .code_editor(),
-                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.add_dialog_text)
+                                    .desired_rows(12)
+                                    .desired_width(ui.available_width())
+                                    .code_editor(),
+                            );
+                        });
                     ui.horizontal(|ui| {
                         if ui.button("ADD").clicked() {
                             submitted = true;
