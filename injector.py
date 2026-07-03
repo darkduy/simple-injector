@@ -1,11 +1,11 @@
 """
-InjectorService – Roblox Fast Flags memory injector.
+InjectorService - Roblox Fast Flags memory injector.
 
 Lock ordering (always acquire in this order to prevent deadlock):
     1. _apply_lock   (coarse: one apply batch at a time)
     2. _state_lock   (fine:   guards process handle / connection state)
 
-WriteProcessMemory is called **outside** _state_lock after a safe snapshot
+WriteProcessMemory is called outside _state_lock after a safe snapshot
 of (handle, address), so we never hold a lock across a syscall.
 """
 
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import ctypes
 import json
-import os
 import re
 import threading
 import time
@@ -22,43 +21,7 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Callable
 
-# ---------------------------------------------------------------------------
-# Paths & constants
-# ---------------------------------------------------------------------------
-
-_LOCAL_APP_DATA = Path(os.getenv("LOCALAPPDATA", Path.home() / ".local" / "share"))
-DATA_PATH = _LOCAL_APP_DATA / "ez"
-DATA_PATH.mkdir(parents=True, exist_ok=True)
-FFS_FILE = DATA_PATH / "ffs.json"
-
-OFFSETS_URL = (
-    "https://raw.githubusercontent.com/darkduy/simple-injector"
-    "/refs/heads/main/fflags.hpp"
-)
-
-TARGET_PROCESS = "RobloxPlayerBeta.exe"
-TARGET_PROCESS_LOWER = TARGET_PROCESS.lower()
-
-# Process-access rights
-_PROCESS_QUERY_INFORMATION = 0x0400
-_PROCESS_VM_OPERATION = 0x0008
-_PROCESS_VM_WRITE = 0x0020
-PROCESS_ACCESS = _PROCESS_QUERY_INFORMATION | _PROCESS_VM_OPERATION | _PROCESS_VM_WRITE
-
-# Toolhelp32 snapshot flags
-TH32CS_SNAPPROCESS = 0x00000002
-TH32CS_SNAPMODULE = 0x00000008
-TH32CS_SNAPMODULE32 = 0x00000010
-
-INVALID_HANDLE = wintypes.HANDLE(-1).value
-
-# Known flag type prefixes (longest first to avoid partial matches)
-_FLAG_PREFIXES = (
-    "DFString", "FString",
-    "DFFlag", "FFlag",
-    "DFInt", "FInt",
-    "FLog",
-)
+import settings
 
 # ---------------------------------------------------------------------------
 # Win32 API wiring
@@ -152,7 +115,6 @@ class _MODULEENTRY32W(ctypes.Structure):
 # ---------------------------------------------------------------------------
 
 def _iter_snapshot(snapshot, entry_type, first_fn, next_fn):
-    """Yield successive entries from a Toolhelp32 snapshot."""
     entry = entry_type()
     entry.dwSize = ctypes.sizeof(entry)
     if first_fn(snapshot, ctypes.byref(entry)):
@@ -163,13 +125,8 @@ def _iter_snapshot(snapshot, entry_type, first_fn, next_fn):
 
 
 def _find_pid_and_base(target_lower: str) -> tuple[int | None, int | None]:
-    """
-    Single pass: enumerate processes, then enumerate modules for the match.
-    Returns (pid, base_address) or (None, None).
-    """
-    # --- pass 1: find pid ---
-    snap = _CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if snap == INVALID_HANDLE:
+    snap = _CreateToolhelp32Snapshot(settings.TH32CS_SNAPPROCESS, 0)
+    if snap == settings.INVALID_HANDLE:
         return None, None
 
     pid = None
@@ -184,9 +141,10 @@ def _find_pid_and_base(target_lower: str) -> tuple[int | None, int | None]:
     if pid is None:
         return None, None
 
-    # --- pass 2: find base address ---
-    snap = _CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
-    if snap == INVALID_HANDLE:
+    snap = _CreateToolhelp32Snapshot(
+        settings.TH32CS_SNAPMODULE | settings.TH32CS_SNAPMODULE32, pid
+    )
+    if snap == settings.INVALID_HANDLE:
         return pid, None
 
     base = None
@@ -202,24 +160,20 @@ def _find_pid_and_base(target_lower: str) -> tuple[int | None, int | None]:
 
 
 def _open_process(pid: int) -> wintypes.HANDLE | None:
-    handle = _OpenProcess(PROCESS_ACCESS, False, pid)
-    if not handle or handle == INVALID_HANDLE:
+    handle = _OpenProcess(settings.PROCESS_ACCESS, False, pid)
+    if not handle or handle == settings.INVALID_HANDLE:
         return None
     return handle
 
 
 def _strip_flag_prefix(name: str) -> str:
-    for prefix in _FLAG_PREFIXES:
+    for prefix in settings.FLAG_PREFIXES:
         if name.startswith(prefix):
             return name[len(prefix):]
     return name
 
 
 def _parse_flag_value(value) -> int | None:
-    """
-    Map a flag value to a uint32 integer suitable for WriteProcessMemory.
-    Accepts: bool strings, integers (decimal / hex), floats (as bit-cast).
-    """
     s = str(value).strip().lower()
     if s == "true":
         return 1
@@ -230,10 +184,9 @@ def _parse_flag_value(value) -> int | None:
     except ValueError:
         pass
     try:
-        # float flag: reinterpret bits as uint32
         f = float(s)
         return ctypes.c_uint32.from_buffer_copy(ctypes.c_float(f)).value
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
 
@@ -250,6 +203,16 @@ def _write_uint32(handle: wintypes.HANDLE, address: int, value: int) -> bool:
     return bool(ok) and written.value == ctypes.sizeof(buf)
 
 
+def _load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"Warning: could not read {path.name}: {exc}")
+        return default
+
+
 # ---------------------------------------------------------------------------
 # InjectorService
 # ---------------------------------------------------------------------------
@@ -260,23 +223,15 @@ class InjectorService:
 
     Thread safety
     -------------
-    _state_lock  – guards: process_handle, base_address, process_pid,
+    _state_lock  - guards: process_handle, base_address, process_pid,
                             is_connected, status_callback, apply_result_callback
-    _apply_lock  – ensures only one apply-all batch runs at a time
+    _apply_lock  - ensures only one apply-all batch runs at a time
     """
 
-    # Retry attempts when a flag write fails on the first pass
-    RETRY_COUNT = 2
-    # Seconds between process-monitor polls
-    POLL_INTERVAL = 1.5
-    # Seconds between retry passes inside run_apply_all
-    RETRY_DELAY = 0.05
-
     def __init__(self) -> None:
-        self.added_flags: dict[str, object] = _load_json(FFS_FILE, {})
+        self.added_flags: dict[str, object] = _load_json(settings.FFS_FILE, {})
         self.offsets: dict[str, int] = {}
 
-        # Protected by _state_lock
         self._process_handle: wintypes.HANDLE | None = None
         self._base_address: int | None = None
         self._process_pid: int | None = None
@@ -290,31 +245,21 @@ class InjectorService:
         self._running = False
         self._monitor_thread: threading.Thread | None = None
 
-    # ------------------------------------------------------------------
-    # Public properties (read-only snapshots, no lock needed for bools)
-    # ------------------------------------------------------------------
-
     @property
     def is_connected(self) -> bool:
         return self._is_connected
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
-
     def save_data(self) -> None:
-        FFS_FILE.write_text(json.dumps(self.added_flags, indent=4), encoding="utf-8")
+        settings.FFS_FILE.write_text(
+            json.dumps(self.added_flags, indent=4), encoding="utf-8"
+        )
 
     def export_to_file(self, path: Path) -> None:
         path.write_text(json.dumps(self.added_flags, indent=4), encoding="utf-8")
 
-    # ------------------------------------------------------------------
-    # Offset fetching
-    # ------------------------------------------------------------------
-
     def fetch_offsets(self) -> None:
         try:
-            with urllib.request.urlopen(OFFSETS_URL, timeout=5) as resp:
+            with urllib.request.urlopen(settings.OFFSETS_URL, timeout=5) as resp:
                 text = resp.read().decode("utf-8", errors="replace")
 
             matches = re.findall(
@@ -333,10 +278,6 @@ class InjectorService:
                 print("Warning: no offsets parsed; retaining previous offsets")
         except Exception as exc:
             print(f"Warning: fetch_offsets failed: {exc}")
-
-    # ------------------------------------------------------------------
-    # Monitor lifecycle
-    # ------------------------------------------------------------------
 
     def start_monitor(
         self,
@@ -362,12 +303,7 @@ class InjectorService:
         self._monitor_thread = None
         self._detach()
 
-    # ------------------------------------------------------------------
-    # Inject
-    # ------------------------------------------------------------------
-
     def inject(self, name: str, value) -> bool:
-        """Write a single flag to process memory. Thread-safe."""
         clean_name = _strip_flag_prefix(name)
         offset = self.offsets.get(clean_name)
         if offset is None:
@@ -378,7 +314,6 @@ class InjectorService:
             print(f"inject: invalid value for '{clean_name}': {value!r}")
             return False
 
-        # Snapshot handle + address under lock, then write outside lock
         with self._state_lock:
             if not self._process_handle or self._base_address is None:
                 return False
@@ -395,14 +330,12 @@ class InjectorService:
             return False
 
     def run_apply_all(self) -> None:
-        """
-        Asynchronously inject every flag in added_flags.
-        No-op if not connected or a batch is already running.
-        """
-        if not self._is_connected or not self._process_handle:
+        with self._state_lock:
+            ready = self._is_connected and self._process_handle is not None
+        if not ready:
             return
         if not self._apply_lock.acquire(blocking=False):
-            return  # batch already in progress
+            return
 
         items = list(self.added_flags.items())
         if not items:
@@ -417,15 +350,11 @@ class InjectorService:
 
         threading.Thread(target=_task, name="ApplyBatch", daemon=True).start()
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _apply_batch(self, items: list[tuple[str, object]]) -> None:
         status: dict[str, bool] = {name: False for name, _ in items}
         remaining = len(items)
 
-        for attempt in range(self.RETRY_COUNT):
+        for attempt in range(settings.RETRY_COUNT):
             if not self._is_connected or remaining == 0:
                 break
             for name, value in items:
@@ -436,9 +365,9 @@ class InjectorService:
                 if self.inject(name, value):
                     status[name] = True
                     remaining -= 1
-            if remaining == 0 or attempt == self.RETRY_COUNT - 1:
+            if remaining == 0 or attempt == settings.RETRY_COUNT - 1:
                 break
-            time.sleep(self.RETRY_DELAY)
+            time.sleep(settings.RETRY_DELAY)
 
         with self._state_lock:
             cb = self._apply_result_callback
@@ -448,18 +377,17 @@ class InjectorService:
         applied = sum(status.values())
         print(f"Applied FFlags: {applied}/{len(status)}")
 
-    def _attach(self, pid: int) -> bool:
-        """Open process, resolve base address, store state atomically."""
+    def _attach(self, pid: int, base: int | None = None) -> bool:
         handle = _open_process(pid)
         if not handle:
             return False
 
-        _, base = _find_pid_and_base(TARGET_PROCESS_LOWER)
+        if base is None:
+            _, base = _find_pid_and_base(settings.TARGET_PROCESS_LOWER)
         if base is None:
             _CloseHandle(handle)
             return False
 
-        # Swap out old handle before storing the new one
         old_handle = None
         with self._state_lock:
             old_handle = self._process_handle
@@ -502,29 +430,15 @@ class InjectorService:
 
     def _monitor_loop(self) -> None:
         while self._running:
-            pid, _ = _find_pid_and_base(TARGET_PROCESS_LOWER)
+            pid, base = _find_pid_and_base(settings.TARGET_PROCESS_LOWER)
 
             with self._state_lock:
                 connected = self._is_connected
                 current_pid = self._process_pid
 
             if pid and (not connected or current_pid != pid):
-                self._attach(pid)
+                self._attach(pid, base)
             elif not pid and connected:
                 self._detach()
 
-            time.sleep(self.POLL_INTERVAL)
-
-
-# ---------------------------------------------------------------------------
-# Module-level utilities
-# ---------------------------------------------------------------------------
-
-def _load_json(path: Path, default):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"Warning: could not read {path.name}: {exc}")
-        return default
+            time.sleep(settings.POLL_INTERVAL)
