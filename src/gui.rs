@@ -18,12 +18,20 @@ pub struct InjectorApp {
     is_connected: bool,
     flag_statuses: HashMap<String, FlagStatus>,
     apply_in_progress: bool,
-    apply_summary: Option<(usize, usize)>, // (success, fail)
+    apply_summary: Option<(usize, usize)>,
 
     search_text: String,
     show_add_dialog: bool,
     add_dialog_text: String,
+    show_delete_all_confirm: bool,
     error_message: Option<String>,
+
+    // Inline editing state: name of the flag currently being edited, and
+    // the draft value text (kept separate so partial edits don't hit disk
+    // on every keystroke).
+    editing_flag: Option<String>,
+    edit_draft: String,
+    rename_draft: String,
 }
 
 impl InjectorApp {
@@ -47,7 +55,11 @@ impl InjectorApp {
             search_text: String::new(),
             show_add_dialog: false,
             add_dialog_text: String::new(),
+            show_delete_all_confirm: false,
             error_message: None,
+            editing_flag: None,
+            edit_draft: String::new(),
+            rename_draft: String::new(),
         }
     }
 
@@ -79,6 +91,49 @@ impl InjectorApp {
         self.apply_summary = None;
         self.service.run_apply_all();
     }
+
+    fn start_editing(&mut self, name: &str, value: &str) {
+        self.editing_flag = Some(name.to_string());
+        self.rename_draft = name.to_string();
+        self.edit_draft = value.to_string();
+    }
+
+    fn cancel_editing(&mut self) {
+        self.editing_flag = None;
+        self.edit_draft.clear();
+        self.rename_draft.clear();
+    }
+
+    fn commit_editing(&mut self) {
+        let Some(original_name) = self.editing_flag.take() else { return };
+        let new_name = self.rename_draft.trim().to_string();
+        let new_value = self.edit_draft.clone();
+
+        if new_name.is_empty() {
+            self.error_message = Some("Flag name cannot be empty.".into());
+            self.edit_draft.clear();
+            self.rename_draft.clear();
+            return;
+        }
+
+        let mut flags = self.service.added_flags.lock().unwrap();
+
+        if new_name != original_name && flags.contains_key(&new_name) {
+            drop(flags);
+            self.error_message = Some(format!("Flag '{new_name}' already exists."));
+            self.edit_draft.clear();
+            self.rename_draft.clear();
+            return;
+        }
+
+        flags.remove(&original_name);
+        flags.insert(new_name, new_value);
+        drop(flags);
+
+        self.service.save_data();
+        self.edit_draft.clear();
+        self.rename_draft.clear();
+    }
 }
 
 impl eframe::App for InjectorApp {
@@ -96,11 +151,13 @@ impl eframe::App for InjectorApp {
                 ui.colored_label(color, text);
             });
 
-            let flag_count = self.service.added_flags.lock().unwrap().len();
             ui.label(
-                egui::RichText::new(format!("Modified FFlags: {flag_count}"))
-                    .color(egui::Color32::GRAY)
-                    .size(11.0),
+                egui::RichText::new(format!(
+                    "Modified FFlags: {}",
+                    self.service.added_flags.lock().unwrap().len()
+                ))
+                .color(egui::Color32::GRAY)
+                .size(11.0),
             );
 
             ui.horizontal(|ui| {
@@ -115,6 +172,13 @@ impl eframe::App for InjectorApp {
                         }
                     }
                 }
+                let delete_all_enabled = !self.service.added_flags.lock().unwrap().is_empty();
+                if ui
+                    .add_enabled(delete_all_enabled, egui::Button::new("Delete All"))
+                    .clicked()
+                {
+                    self.show_delete_all_confirm = true;
+                }
             });
 
             ui.add(
@@ -124,62 +188,150 @@ impl eframe::App for InjectorApp {
 
             ui.separator();
 
+            const ROW_HEIGHT: f32 = 24.0;
+
             egui::ScrollArea::vertical()
+                .id_salt("flags_panel_outer")
                 .max_height((ui.available_height() - 70.0).max(80.0))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                ui.set_max_width(ui.available_width());
-                let flags: Vec<(String, String)> = {
-                    let guard = self.service.added_flags.lock().unwrap();
-                    guard
-                        .iter()
-                        .filter(|(name, _)| {
-                            self.search_text.is_empty()
-                                || name.to_lowercase().contains(&self.search_text.to_lowercase())
-                        })
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                };
+                    let flags: Vec<(String, String)> = {
+                        let guard = self.service.added_flags.lock().unwrap();
+                        let mut v: Vec<(String, String)> = guard
+                            .iter()
+                            .filter(|(name, _)| {
+                                self.search_text.is_empty()
+                                    || name
+                                        .to_lowercase()
+                                        .contains(&self.search_text.to_lowercase())
+                            })
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        v.sort_by(|a, b| a.0.cmp(&b.0));
+                        v
+                    };
 
-                let mut to_remove: Option<String> = None;
+                    let mut to_remove: Option<String> = None;
+                    let mut to_start_edit: Option<(String, String)> = None;
+                    let mut commit_requested = false;
+                    let mut cancel_requested = false;
 
-                egui::Grid::new("flags_grid")
-                    .num_columns(4)
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Name");
-                        ui.strong("Value");
-                        ui.strong("Status");
-                        ui.strong("");
-                        ui.end_row();
-
-                        for (name, value) in &flags {
-                            ui.add(egui::Label::new(name).truncate());
-                            ui.add(egui::Label::new(value).truncate());
-
-                            let (text, color) = match self.flag_statuses.get(name) {
-                                Some(FlagStatus::Success) => {
-                                    ("Success", egui::Color32::from_rgb(0x44, 0xFF, 0x44))
-                                }
-                                Some(FlagStatus::Fail) => {
-                                    ("Fail", egui::Color32::from_rgb(0xFF, 0x44, 0x44))
-                                }
-                                _ => ("Pending", egui::Color32::GRAY),
-                            };
-                            ui.colored_label(color, text);
-
-                            if ui.small_button("x").clicked() {
-                                to_remove = Some(name.clone());
-                            }
-                            ui.end_row();
-                        }
+                    // Header row stays fixed, outside the virtualized area.
+                    ui.horizontal(|ui| {
+                        ui.add_sized([180.0, ROW_HEIGHT], egui::Label::new(
+                            egui::RichText::new("Name").strong(),
+                        ));
+                        ui.add_sized([140.0, ROW_HEIGHT], egui::Label::new(
+                            egui::RichText::new("Value").strong(),
+                        ));
+                        ui.add_sized([70.0, ROW_HEIGHT], egui::Label::new(
+                            egui::RichText::new("Status").strong(),
+                        ));
+                        ui.label("");
                     });
+                    ui.separator();
 
-                if let Some(name) = to_remove {
-                    self.service.added_flags.lock().unwrap().remove(&name);
-                    self.service.save_data();
-                }
-            });
+                    // Only the rows currently scrolled into view are built
+                    // each frame, so the UI stays fast with large flag sets.
+                    egui::ScrollArea::vertical()
+                        .id_salt("flags_virtual_list")
+                        .show_rows(ui, ROW_HEIGHT, flags.len(), |ui, row_range| {
+                            for i in row_range {
+                                let (name, value) = &flags[i];
+                                let is_editing =
+                                    self.editing_flag.as_deref() == Some(name.as_str());
+
+                                ui.horizontal(|ui| {
+                                    if is_editing {
+                                        let name_resp = ui.add_sized(
+                                            [180.0, ROW_HEIGHT],
+                                            egui::TextEdit::singleline(&mut self.rename_draft),
+                                        );
+                                        let value_resp = ui.add_sized(
+                                            [140.0, ROW_HEIGHT],
+                                            egui::TextEdit::singleline(&mut self.edit_draft),
+                                        );
+                                        let enter_pressed =
+                                            ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                        if enter_pressed
+                                            && (name_resp.lost_focus()
+                                                || value_resp.lost_focus())
+                                        {
+                                            commit_requested = true;
+                                        }
+                                        let escape_pressed =
+                                            ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                        if escape_pressed
+                                            && (name_resp.has_focus() || value_resp.has_focus())
+                                        {
+                                            cancel_requested = true;
+                                        }
+                                        ui.add_sized([70.0, ROW_HEIGHT], egui::Label::new("-"));
+                                        if ui.small_button("Save").clicked() {
+                                            commit_requested = true;
+                                        }
+                                        if ui.small_button("Cancel").clicked() {
+                                            cancel_requested = true;
+                                        }
+                                    } else {
+                                        ui.add_sized(
+                                            [180.0, ROW_HEIGHT],
+                                            egui::Label::new(name).truncate(),
+                                        )
+                                        .on_hover_text(name);
+                                        ui.add_sized(
+                                            [140.0, ROW_HEIGHT],
+                                            egui::Label::new(value).truncate(),
+                                        )
+                                        .on_hover_text(value);
+
+                                        let (text, color) = match self.flag_statuses.get(name) {
+                                            Some(FlagStatus::Success) => (
+                                                "Success",
+                                                egui::Color32::from_rgb(0x44, 0xFF, 0x44),
+                                            ),
+                                            Some(FlagStatus::Fail) => (
+                                                "Fail",
+                                                egui::Color32::from_rgb(0xFF, 0x44, 0x44),
+                                            ),
+                                            _ => ("Pending", egui::Color32::GRAY),
+                                        };
+                                        ui.add_sized(
+                                            [70.0, ROW_HEIGHT],
+                                            egui::Label::new(
+                                                egui::RichText::new(text).color(color),
+                                            ),
+                                        );
+
+                                        if ui.small_button("Edit").clicked() {
+                                            to_start_edit =
+                                                Some((name.clone(), value.clone()));
+                                        }
+                                        if ui.small_button("x").clicked() {
+                                            to_remove = Some(name.clone());
+                                        }
+                                    }
+                                });
+                            }
+                        });
+
+                    if let Some((name, value)) = to_start_edit {
+                        self.start_editing(&name, &value);
+                    }
+                    if commit_requested {
+                        self.commit_editing();
+                    }
+                    if cancel_requested {
+                        self.cancel_editing();
+                    }
+                    if let Some(name) = to_remove {
+                        self.service.added_flags.lock().unwrap().remove(&name);
+                        self.service.save_data();
+                        if self.editing_flag.as_deref() == Some(name.as_str()) {
+                            self.cancel_editing();
+                        }
+                    }
+                });
 
             ui.separator();
 
@@ -195,7 +347,7 @@ impl eframe::App for InjectorApp {
             ui.horizontal(|ui| {
                 let can_apply = self.is_connected
                     && !self.apply_in_progress
-                    && flag_count > 0;
+                    && !self.service.added_flags.lock().unwrap().is_empty();
 
                 let label = if self.apply_in_progress { "Applying..." } else { "Apply All" };
                 if ui.add_enabled(can_apply, egui::Button::new(label)).clicked() {
@@ -213,6 +365,43 @@ impl eframe::App for InjectorApp {
             }
         });
 
+        if self.show_delete_all_confirm {
+            let mut open = true;
+            let mut confirmed = false;
+
+            egui::Window::new("Confirm Delete All")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_size([320.0, 120.0])
+                .show(ctx, |ui| {
+                    ui.label("Delete all modified FFlags? This cannot be undone.");
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(egui::RichText::new("Delete All").color(egui::Color32::from_rgb(0xFF, 0x44, 0x44)))
+                            .clicked()
+                        {
+                            confirmed = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_delete_all_confirm = false;
+                        }
+                    });
+                });
+
+            if !open {
+                self.show_delete_all_confirm = false;
+            }
+            if confirmed {
+                self.service.added_flags.lock().unwrap().clear();
+                self.service.save_data();
+                self.flag_statuses.clear();
+                self.apply_summary = None;
+                self.cancel_editing();
+                self.show_delete_all_confirm = false;
+            }
+        }
+
         if self.show_add_dialog {
             let mut open = true;
             let mut submitted = false;
@@ -227,6 +416,7 @@ impl eframe::App for InjectorApp {
                 .show(ctx, |ui| {
                     ui.label("Paste JSON here:");
                     egui::ScrollArea::vertical()
+                        .id_salt("add_dialog_textarea")
                         .max_height(280.0)
                         .show(ui, |ui| {
                             ui.add(

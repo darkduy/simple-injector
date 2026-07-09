@@ -1,12 +1,3 @@
-//! InjectorService - Roblox Fast Flags memory injector.
-//!
-//! Lock ordering (always acquire in this order to prevent deadlock):
-//!     1. `apply_lock`  (coarse: one apply batch at a time)
-//!     2. `state`       (fine:   guards process handle / connection state)
-//!
-//! `WriteProcessMemory` is called outside the `state` lock, after a safe
-//! snapshot of `(handle, address)`, so we never hold a lock across a syscall.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -26,7 +17,6 @@ use windows::Win32::System::Threading::{
 
 use crate::settings;
 
-/// Events sent from background threads to the GUI thread.
 pub enum InjectorEvent {
     ConnectionChanged(bool),
     ApplyResult(HashMap<String, bool>),
@@ -45,10 +35,6 @@ impl Default for ProcessState {
     }
 }
 
-// SAFETY: HANDLE is just a raw pointer-sized value; we never dereference it
-// across threads without synchronizing through `state`. Windows handles are
-// safe to use from any thread as long as access is externally serialized,
-// which the Mutex guarantees.
 unsafe impl Send for ProcessState {}
 
 pub struct InjectorService {
@@ -79,10 +65,6 @@ impl InjectorService {
         self.state.lock().unwrap().is_connected
     }
 
-    // ------------------------------------------------------------------
-    // Persistence
-    // ------------------------------------------------------------------
-
     pub fn save_data(&self) {
         let flags = self.added_flags.lock().unwrap();
         if let Ok(json) = serde_json::to_string_pretty(&*flags) {
@@ -95,10 +77,6 @@ impl InjectorService {
         let json = serde_json::to_string_pretty(&*flags).unwrap_or_default();
         std::fs::write(path, json)
     }
-
-    // ------------------------------------------------------------------
-    // Offset fetching
-    // ------------------------------------------------------------------
 
     pub fn fetch_offsets(&self) {
         let result: Result<String, String> = ureq::get(settings::OFFSETS_URL)
@@ -137,10 +115,6 @@ impl InjectorService {
         println!("Offsets loaded: {count}");
     }
 
-    // ------------------------------------------------------------------
-    // Monitor lifecycle
-    // ------------------------------------------------------------------
-
     pub fn start_monitor(self: &'static Self, event_tx: Sender<InjectorEvent>) {
         if self.running.swap(true, Ordering::SeqCst) {
             return;
@@ -157,10 +131,6 @@ impl InjectorService {
         self.running.store(false, Ordering::SeqCst);
         self.detach();
     }
-
-    // ------------------------------------------------------------------
-    // Inject
-    // ------------------------------------------------------------------
 
     pub fn inject(&self, name: &str, value: &str) -> bool {
         let clean_name = strip_flag_prefix(name);
@@ -195,11 +165,11 @@ impl InjectorService {
             return;
         }
 
-        match self.apply_lock.try_lock() {
-            Ok(_guard) => {}
+        let guard = match self.apply_lock.try_lock() {
+            Ok(guard) => guard,
             Err(TryLockError::WouldBlock) => return,
-            Err(TryLockError::Poisoned(_)) => {}
-        }
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
 
         let items: Vec<(String, String)> = self
             .added_flags
@@ -216,15 +186,11 @@ impl InjectorService {
         thread::Builder::new()
             .name("ApplyBatch".into())
             .spawn(move || {
-                let _guard = self.apply_lock.lock().unwrap();
+                let _guard = guard;
                 self.apply_batch(&items);
             })
             .expect("failed to spawn apply thread");
     }
-
-    // ------------------------------------------------------------------
-    // Internal
-    // ------------------------------------------------------------------
 
     fn apply_batch(&self, items: &[(String, String)]) {
         let mut status: HashMap<String, bool> =
@@ -356,10 +322,6 @@ impl InjectorService {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Free functions - no service state, easy to unit test
-// ---------------------------------------------------------------------------
-
 fn strip_flag_prefix(name: &str) -> &str {
     for prefix in settings::FLAG_PREFIXES {
         if let Some(stripped) = name.strip_prefix(prefix) {
@@ -415,10 +377,6 @@ fn open_process(pid: u32) -> Option<HANDLE> {
     unsafe { OpenProcess(access, windows::Win32::Foundation::BOOL(0), pid).ok() }
 }
 
-/// Enumerate processes to find the target PID, then enumerate its modules
-/// to resolve the main module base address. Returns `(pid, Some(base))` if
-/// both are found, `(pid, None)` if the process exists but base lookup
-/// failed, or `None` if the process isn't running.
 fn find_pid_and_base() -> Option<(u32, Option<usize>)> {
     let pid = find_pid_by_name(settings::TARGET_PROCESS)?;
     let base = find_module_base(pid, settings::TARGET_PROCESS);
@@ -474,8 +432,6 @@ fn find_module_base(pid: u32, module_name: &str) -> Option<usize> {
     }
 }
 
-/// RAII guard that closes a Toolhelp32 snapshot handle on drop.
-#[allow(dead_code)]
 struct HandleGuard(HANDLE);
 impl Drop for HandleGuard {
     fn drop(&mut self) {
