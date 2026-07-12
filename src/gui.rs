@@ -6,7 +6,6 @@ use eframe::egui;
 use crate::injector::{InjectorEvent, InjectorService};
 
 enum FlagStatus {
-    Pending,
     Success,
     Fail,
 }
