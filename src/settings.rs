@@ -25,7 +25,12 @@ pub static DATA_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
             dirs_home().join(".local").join("share")
         });
     let path = base.join("ez");
-    let _ = std::fs::create_dir_all(&path);
+    if let Err(e) = std::fs::create_dir_all(&path) {
+        eprintln!(
+            "Warning: could not create data directory {}: {e}. Saving FFlags will fail until this is resolved.",
+            path.display()
+        );
+    }
     path
 });
 

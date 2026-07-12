@@ -26,9 +26,6 @@ pub struct InjectorApp {
     show_delete_all_confirm: bool,
     error_message: Option<String>,
 
-    // Inline editing state: name of the flag currently being edited, and
-    // the draft value text (kept separate so partial edits don't hit disk
-    // on every keystroke).
     editing_flag: Option<String>,
     edit_draft: String,
     rename_draft: String,
@@ -92,6 +89,14 @@ impl InjectorApp {
         self.service.run_apply_all();
     }
 
+    /// Persist flags to disk and surface any failure to the user instead of
+    /// failing silently.
+    fn save_and_report(&mut self) {
+        if let Err(e) = self.service.save_data() {
+            self.error_message = Some(format!("Failed to save FFlags: {e}"));
+        }
+    }
+
     fn start_editing(&mut self, name: &str, value: &str) {
         self.editing_flag = Some(name.to_string());
         self.rename_draft = name.to_string();
@@ -130,7 +135,7 @@ impl InjectorApp {
         flags.insert(new_name, new_value);
         drop(flags);
 
-        self.service.save_data();
+        self.save_and_report();
         self.edit_draft.clear();
         self.rename_draft.clear();
     }
@@ -216,7 +221,6 @@ impl eframe::App for InjectorApp {
                     let mut commit_requested = false;
                     let mut cancel_requested = false;
 
-                    // Header row stays fixed, outside the virtualized area.
                     ui.horizontal(|ui| {
                         ui.add_sized([180.0, ROW_HEIGHT], egui::Label::new(
                             egui::RichText::new("Name").strong(),
@@ -231,8 +235,6 @@ impl eframe::App for InjectorApp {
                     });
                     ui.separator();
 
-                    // Only the rows currently scrolled into view are built
-                    // each frame, so the UI stays fast with large flag sets.
                     egui::ScrollArea::vertical()
                         .id_salt("flags_virtual_list")
                         .show_rows(ui, ROW_HEIGHT, flags.len(), |ui, row_range| {
@@ -326,7 +328,7 @@ impl eframe::App for InjectorApp {
                     }
                     if let Some(name) = to_remove {
                         self.service.added_flags.lock().unwrap().remove(&name);
-                        self.service.save_data();
+                        self.save_and_report();
                         if self.editing_flag.as_deref() == Some(name.as_str()) {
                             self.cancel_editing();
                         }
@@ -394,7 +396,7 @@ impl eframe::App for InjectorApp {
             }
             if confirmed {
                 self.service.added_flags.lock().unwrap().clear();
-                self.service.save_data();
+                self.save_and_report();
                 self.flag_statuses.clear();
                 self.apply_summary = None;
                 self.cancel_editing();
@@ -450,12 +452,13 @@ impl eframe::App for InjectorApp {
             if submitted {
                 match parse_flags_json(&self.add_dialog_text) {
                     Ok(map) => {
-                        let mut flags = self.service.added_flags.lock().unwrap();
-                        for (k, v) in map {
-                            flags.insert(k, v);
+                        {
+                            let mut flags = self.service.added_flags.lock().unwrap();
+                            for (k, v) in map {
+                                flags.insert(k, v);
+                            }
                         }
-                        drop(flags);
-                        self.service.save_data();
+                        self.save_and_report();
                         self.show_add_dialog = false;
                     }
                     Err(e) => {

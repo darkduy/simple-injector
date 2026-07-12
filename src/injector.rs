@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Mutex, TryLockError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -43,6 +43,7 @@ pub struct InjectorService {
 
     state: Mutex<ProcessState>,
     apply_lock: Mutex<()>,
+    apply_pending: AtomicBool,
 
     running: AtomicBool,
     event_tx: Mutex<Option<Sender<InjectorEvent>>>,
@@ -56,6 +57,7 @@ impl InjectorService {
             offsets: Mutex::new(HashMap::new()),
             state: Mutex::new(ProcessState::default()),
             apply_lock: Mutex::new(()),
+            apply_pending: AtomicBool::new(false),
             running: AtomicBool::new(false),
             event_tx: Mutex::new(None),
         }
@@ -65,11 +67,15 @@ impl InjectorService {
         self.state.lock().unwrap().is_connected
     }
 
-    pub fn save_data(&self) {
+    pub fn save_data(&self) -> Result<(), String> {
         let flags = self.added_flags.lock().unwrap();
-        if let Ok(json) = serde_json::to_string_pretty(&*flags) {
-            let _ = std::fs::write(&*settings::FFS_FILE, json);
-        }
+        let json = serde_json::to_string_pretty(&*flags)
+            .map_err(|e| format!("failed to serialize flags: {e}"))?;
+        drop(flags);
+
+        std::fs::write(&*settings::FFS_FILE, json).map_err(|e| {
+            format!("could not write {}: {e}", settings::FFS_FILE.display())
+        })
     }
 
     pub fn export_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
@@ -165,11 +171,13 @@ impl InjectorService {
             return;
         }
 
-        let guard = match self.apply_lock.try_lock() {
-            Ok(guard) => guard,
-            Err(TryLockError::WouldBlock) => return,
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-        };
+        if self
+            .apply_pending
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
 
         let items: Vec<(String, String)> = self
             .added_flags
@@ -180,14 +188,19 @@ impl InjectorService {
             .collect();
 
         if items.is_empty() {
+            self.apply_pending.store(false, Ordering::SeqCst);
             return;
         }
 
         thread::Builder::new()
             .name("ApplyBatch".into())
             .spawn(move || {
-                let _guard = guard;
+                let _guard = self
+                    .apply_lock
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 self.apply_batch(&items);
+                self.apply_pending.store(false, Ordering::SeqCst);
             })
             .expect("failed to spawn apply thread");
     }
