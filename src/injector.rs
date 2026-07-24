@@ -392,7 +392,7 @@ fn open_process(pid: u32) -> Option<HANDLE> {
 
 fn find_pid_and_base() -> Option<(u32, Option<usize>)> {
     let pid = find_pid_by_name(settings::TARGET_PROCESS)?;
-    let base = find_module_base(pid, settings::TARGET_PROCESS);
+    let base = find_module_bounds(pid, settings::TARGET_PROCESS).map(|(base, _)| base);
     Some((pid, base))
 }
 
@@ -420,7 +420,7 @@ fn find_pid_by_name(target: &str) -> Option<u32> {
     }
 }
 
-fn find_module_base(pid: u32, module_name: &str) -> Option<usize> {
+fn find_module_bounds(pid: u32, module_name: &str) -> Option<(usize, usize)> {
     let target_lower = module_name.to_ascii_lowercase();
     unsafe {
         let snap =
@@ -436,7 +436,7 @@ fn find_module_base(pid: u32, module_name: &str) -> Option<usize> {
         loop {
             let name = wchar_to_string(&entry.szModule);
             if name.to_ascii_lowercase() == target_lower {
-                return Some(entry.modBaseAddr as usize);
+                return Some((entry.modBaseAddr as usize, entry.modBaseSize as usize));
             }
             if Module32NextW(snap, &mut entry).is_err() {
                 return None;
