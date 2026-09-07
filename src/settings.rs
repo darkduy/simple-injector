@@ -3,19 +3,26 @@ use std::sync::LazyLock;
 
 pub const OFFSETS_URL: &str =
     "https://raw.githubusercontent.com/darkduy/simple-injector/refs/heads/main/fflags.hpp";
-
 pub const TARGET_PROCESS: &str = "RobloxPlayerBeta.exe";
-
 pub const RETRY_COUNT: u32 = 2;
 pub const POLL_INTERVAL_MS: u64 = 1500;
 pub const RETRY_DELAY_MS: u64 = 50;
 
-/// Longest-prefix-first so e.g. "DFFlag" is stripped before "FFlag".
+/// Known Roblox FastFlag prefix families, longest-prefix-first within each
+/// family so e.g. "DFFlag" is stripped before the shorter "FFlag" it contains,
+/// and "SFString" before "FString". Order across families doesn't matter since
+/// they don't overlap with each other.
+///
+/// Families:
+/// - Flag   (bool):              FFlag   / DFFlag  / SFFlag
+/// - Int:                        FInt    / DFInt   / SFInt
+/// - String:                     FString / DFString / SFString
+/// - Log (verbosity level, int): FLog    / DFLog   / SFLog
 pub const FLAG_PREFIXES: &[&str] = &[
-    "DFString", "FString",
-    "DFFlag", "FFlag",
-    "DFInt", "FInt",
-    "FLog",
+    "DFString", "SFString", "FString",
+    "DFFlag", "SFFlag", "FFlag",
+    "DFInt", "SFInt", "FInt",
+    "DFLog", "SFLog", "FLog",
 ];
 
 pub static DATA_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
@@ -33,7 +40,6 @@ pub static DATA_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     }
     path
 });
-
 pub static FFS_FILE: LazyLock<PathBuf> = LazyLock::new(|| DATA_PATH.join("ffs.json"));
 
 fn dirs_home() -> PathBuf {
